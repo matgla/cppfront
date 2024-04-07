@@ -21,7 +21,8 @@
 #include "common.h"
 #include <fstream>
 #include <cctype>
-
+#include <cstddef>
+#include <span>
 
 namespace cpp2 {
 
@@ -109,25 +110,31 @@ auto is_preprocessor(
 //
 //  line    current line being processed
 //
-auto starts_with_import(std::string const& line)
-    -> bool
+auto starts_with_tokens(std::string const& line, std::initializer_list<std::string_view> const tokens)    -> bool
 {
     auto i = 0;
 
-    //  find first non-whitespace character
-    if (!move_next(line, i, isspace)) {
-        return false;
-    }
+    for (auto token: tokens) {
+        //  find first non-whitespace character
+        if (!move_next(line, i, isspace)) {
+            return false;
+        }
+        
+        // now must begin with the token
+        if (!std::string_view(line).substr(i).starts_with(token)) {
+            return false;
+        }
 
-    static constexpr auto import_keyword = std::string_view{"import"};
+        // and not be immediately followed by an _identifier-continue_
+        if (is_identifier_continue(line[i + token.size()])) {
+            return false;
+        }
 
-    // the first token must begin with 'import'
-    if (!std::string_view(line).substr(i).starts_with(import_keyword)) {
-        return false;
+        i += token.size();
     }
 
     // and not be immediately followed by an _identifier-continue_
-    return !is_identifier_continue(line[i + import_keyword.size()]);
+    return true;
 }
 
 
@@ -298,6 +305,9 @@ auto starts_with_identifier_colon(std::string const& line)
     }
     else if (s.starts_with("private")) {
         j += 7;
+    }
+    else if (s.starts_with("export")) {
+      j += 6;
     }
     while (
         j < std::ssize(s)
@@ -814,8 +824,10 @@ class source
 {
     std::vector<error_entry>& errors;
     std::vector<source_line>  lines;
-    bool                      cpp1_found = false;
-    bool                      cpp2_found = false;
+    std::ptrdiff_t            module_lines           = 0;
+    bool                      module_directive_found = false;
+    bool                      cpp1_found             = false;
+    bool                      cpp2_found             = false;
 
     static const int max_line_len = 90'000;
         //  do not reduce this - I encountered an 80,556-char
@@ -837,6 +849,22 @@ public:
     {
     }
 
+    //-----------------------------------------------------------------------
+    //  is_module: Returns true if this file is a module unit
+    //  (note: module, export, and import lines don't count toward Cpp1 or Cpp2)
+    //
+    auto is_module() const -> bool {
+        return module_lines != 0;
+    }
+
+
+    //-----------------------------------------------------------------------
+    //  has_module_directive: Returns true if this file has a module directive
+    //  (note: module, export, and import lines don't count toward Cpp1 or Cpp2)
+    //
+    auto has_module_directive() const -> bool {
+        return module_directive_found;
+    }
 
     //-----------------------------------------------------------------------
     //  has_cpp1: Returns true if this file has some Cpp1/preprocessor lines
@@ -923,7 +951,10 @@ public:
             else
             {
                 lines.push_back({ &buf[0], source_line::category::cpp1 });
-
+                auto starts_with_import = [&](auto& text) {
+                  return starts_with_tokens(text, {"import"})
+                         || starts_with_tokens(text, {"export", "import"});
+                };
                 //  Switch to cpp2 mode if we're not in a comment, not inside nested { },
                 //  and the line starts with "nonwhitespace :" but not "::"
                 //
@@ -931,7 +962,8 @@ public:
                     && !in_raw_string_literal
                     && braces.current_depth() < 1
                     && starts_with_identifier_colon(lines.back().text)
-                    )
+                    && !starts_with_import(lines.back().text) // For a _module-partition_
+                )
                 {
                     cpp2_found= true;
 
@@ -969,8 +1001,22 @@ public:
                 //
                 else
                 {
-                    if (starts_with_import(lines.back().text)) {
+                    if (starts_with_tokens(lines.back().text, {"module", ";"})) {
+                        lines.back().cat = source_line::category::module_directive;
+                        module_directive_found = true;
+                    }
+                    else if (
+                        starts_with_tokens(lines.back().text, {"module"})
+                        || starts_with_tokens(lines.back().text, {"export", "module"})
+                    ) {
+                        lines.back().cat = source_line::category::module_declaration;
+                        module_lines = std::ssize(lines);
+                    }
+                    else if (starts_with_import(lines.back().text)) {                        
                         lines.back().cat = source_line::category::import;
+                        if (is_module()) {
+                            module_lines = std::ssize(lines);
+                        }
                     }
                     else {
                         auto stats = process_cpp_line(
@@ -1043,6 +1089,18 @@ public:
     {
         return lines;
     }
+
+    auto get_module_lines() const -> std::span<const source_line>
+    {
+        return {lines.begin(), lines.begin() + module_lines};
+    }
+
+    auto get_non_module_lines() const -> std::span<const source_line>
+    {
+        return {lines.begin() + module_lines, lines.end()};
+    }
+
+
 
     //-----------------------------------------------------------------------
     //  debug_print

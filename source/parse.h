@@ -2642,7 +2642,7 @@ struct alias_node
 };
 
 
-enum class accessibility { default_ = 0, public_, protected_, private_ };
+enum class accessibility { default_ = 0, public_, protected_, private_, export_ };
 
 auto to_string(accessibility a)
     -> std::string
@@ -2651,6 +2651,7 @@ auto to_string(accessibility a)
     break;case accessibility::public_   : return "public";
     break;case accessibility::protected_: return "protected";
     break;case accessibility::private_  : return "private";
+    break;case accessibility::export_   : return "export";
     break;default: assert(a == accessibility::default_);
     }
     return "default";
@@ -2824,6 +2825,11 @@ struct declaration_node
         return access == accessibility::default_;
     }
 
+    auto is_export() const
+        -> bool
+    {
+        return access == accessibility::export_;
+    }
 private:
     auto set_access(accessibility a)
         -> bool
@@ -8915,6 +8921,10 @@ private:
             }
             else if (curr() == "private") {
                 access = accessibility::private_;
+                next();
+            }
+            else if (curr() == "export") {
+                access = accessibility::export_;
                 next();
             }
 
